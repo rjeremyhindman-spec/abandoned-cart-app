@@ -16,6 +16,10 @@ const pool = new Pool({
 const BC_STORE_HASH = process.env.BC_STORE_HASH;
 const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;
 
+// MailerLite API config
+const MAILERLITE_API_KEY = process.env.MAILERLITE_API_KEY;
+const MAILERLITE_GROUP_NAME = 'Abandoned Cart';
+
 // ===================
 // DATABASE SETUP
 // ===================
@@ -113,6 +117,144 @@ async function getCustomerEmail(customerId) {
 }
 
 // ===================
+// MAILERLITE HELPERS
+// ===================
+async function getMailerLiteGroupId() {
+  try {
+    const response = await fetch('https://connect.mailerlite.com/api/groups?filter[name]=' + encodeURIComponent(MAILERLITE_GROUP_NAME), {
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    });
+    
+    const data = await response.json();
+    if (data.data && data.data.length > 0) {
+      return data.data[0].id;
+    }
+    console.error('MailerLite group not found:', MAILERLITE_GROUP_NAME);
+    return null;
+  } catch (error) {
+    console.error('Error getting MailerLite group:', error);
+    return null;
+  }
+}
+
+async function addSubscriberToMailerLite(email, cartData) {
+  try {
+    const groupId = await getMailerLiteGroupId();
+    if (!groupId) {
+      console.error('Cannot add subscriber - group not found');
+      return false;
+    }
+
+    // Extract product info from cart
+    const lineItems = cartData.line_items || {};
+    const allItems = [
+      ...(lineItems.physical_items || []),
+      ...(lineItems.digital_items || []),
+      ...(lineItems.custom_items || [])
+    ];
+    
+    const firstItem = allItems[0] || {};
+    
+    const subscriberData = {
+      email: email,
+      groups: [groupId],
+      fields: {
+        cart_product_name: firstItem.name || 'Your items',
+        cart_product_image: firstItem.image_url || '',
+        cart_product_url: firstItem.url || '',
+        cart_product_price: firstItem.sale_price || firstItem.list_price || 0,
+        cart_total: cartData.cart_amount || 0,
+        cart_id: cartData.id || ''
+      }
+    };
+
+    const response = await fetch('https://connect.mailerlite.com/api/subscribers', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(subscriberData)
+    });
+
+    const result = await response.json();
+    
+    if (response.ok) {
+      console.log(`Added ${email} to MailerLite Abandoned Cart group`);
+      return true;
+    } else {
+      console.error('MailerLite error:', result);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error adding to MailerLite:', error);
+    return false;
+  }
+}
+
+// ===================
+// ABANDONED CART SCHEDULER
+// ===================
+async function processAbandonedCarts() {
+  console.log('Checking for abandoned carts...');
+  
+  try {
+    // Find carts that:
+    // - Have an email
+    // - Are not converted
+    // - Haven't had first email sent
+    // - Were updated more than 1 hour ago
+    const result = await pool.query(`
+      SELECT * FROM abandoned_carts 
+      WHERE customer_email IS NOT NULL 
+        AND customer_email != ''
+        AND converted = FALSE 
+        AND email_sent_1 = FALSE
+        AND updated_at < NOW() - INTERVAL '1 hour'
+      ORDER BY updated_at ASC
+      LIMIT 10
+    `);
+
+    console.log(`Found ${result.rows.length} abandoned carts to process`);
+
+    for (const cart of result.rows) {
+      console.log(`Processing cart ${cart.cart_id} for ${cart.customer_email}`);
+      
+      const success = await addSubscriberToMailerLite(cart.customer_email, cart.cart_data);
+      
+      if (success) {
+        // Mark as email sent
+        await pool.query(`
+          UPDATE abandoned_carts 
+          SET email_sent_1 = TRUE 
+          WHERE id = $1
+        `, [cart.id]);
+        
+        // Log the email
+        await pool.query(`
+          INSERT INTO email_log (email_type, recipient_email, cart_id)
+          VALUES ('abandoned_cart_1', $1, $2)
+        `, [cart.customer_email, cart.cart_id]);
+        
+        console.log(`Successfully processed cart ${cart.cart_id}`);
+      }
+    }
+  } catch (error) {
+    console.error('Error processing abandoned carts:', error);
+  }
+}
+
+// Run every 5 minutes
+cron.schedule('*/5 * * * *', () => {
+  processAbandonedCarts();
+});
+
+// ===================
 // WEBHOOK ENDPOINTS
 // ===================
 
@@ -131,22 +273,18 @@ app.post('/webhooks/cart-created', async (req, res) => {
       return res.status(200).json({ received: true, note: 'No cart ID' });
     }
 
-    // Fetch full cart details from BigCommerce
     const cart = await getCartDetails(cartId);
     if (!cart) {
       return res.status(200).json({ received: true, note: 'Could not fetch cart' });
     }
 
-    // Try to get customer email
     let customerEmail = cart.email;
     if (!customerEmail && cart.customer_id) {
       customerEmail = await getCustomerEmail(cart.customer_id);
     }
 
-    // Calculate cart total
     const cartTotal = cart.cart_amount || 0;
 
-    // Store in database
     await pool.query(`
       INSERT INTO abandoned_carts (cart_id, customer_email, customer_id, cart_data, cart_total, updated_at)
       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
@@ -167,7 +305,7 @@ app.post('/webhooks/cart-created', async (req, res) => {
   }
 });
 
-// BigCommerce webhook: Cart Updated (same logic as created)
+// BigCommerce webhook: Cart Updated
 app.post('/webhooks/cart-updated', async (req, res) => {
   console.log('Cart updated webhook received:', req.body);
   
@@ -215,8 +353,6 @@ app.post('/webhooks/order-created', async (req, res) => {
   
   try {
     const orderId = req.body.data?.id;
-    
-    // Fetch order to get the cart_id
     const orderData = await fetchFromBigCommerce(`/v2/orders/${orderId}`);
     const cartId = orderData.cart_id;
     
@@ -238,7 +374,6 @@ app.post('/webhooks/order-created', async (req, res) => {
 
 // Browse event endpoint (called from storefront JavaScript)
 app.post('/track/product-view', async (req, res) => {
-  // Set CORS headers for storefront calls
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
@@ -267,7 +402,6 @@ app.post('/track/product-view', async (req, res) => {
   }
 });
 
-// CORS preflight for tracking endpoint
 app.options('/track/product-view', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -276,10 +410,9 @@ app.options('/track/product-view', (req, res) => {
 });
 
 // ===================
-// API ENDPOINTS (for dashboard/debugging)
+// API ENDPOINTS
 // ===================
 
-// Get all abandoned carts
 app.get('/api/abandoned-carts', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -294,19 +427,28 @@ app.get('/api/abandoned-carts', async (req, res) => {
   }
 });
 
-// Get stats
 app.get('/api/stats', async (req, res) => {
   try {
     const stats = await pool.query(`
       SELECT 
-        COUNT(*) FILTER (WHERE converted = FALSE AND customer_email IS NOT NULL) as abandoned_with_email,
-        COUNT(*) FILTER (WHERE converted = FALSE AND customer_email IS NULL) as abandoned_anonymous,
+        COUNT(*) FILTER (WHERE converted = FALSE AND customer_email IS NOT NULL AND customer_email != '') as abandoned_with_email,
+        COUNT(*) FILTER (WHERE converted = FALSE AND (customer_email IS NULL OR customer_email = '')) as abandoned_anonymous,
         COUNT(*) FILTER (WHERE converted = TRUE) as converted,
         COUNT(*) FILTER (WHERE email_sent_1 = TRUE) as emails_sent
       FROM abandoned_carts
       WHERE created_at > NOW() - INTERVAL '30 days'
     `);
     res.json(stats.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Manual trigger for testing
+app.post('/api/process-abandoned', async (req, res) => {
+  try {
+    await processAbandonedCarts();
+    res.json({ success: true, message: 'Processing triggered' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -320,4 +462,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   await initDatabase();
+  console.log('Abandoned cart scheduler started - runs every 5 minutes');
 });
