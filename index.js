@@ -18,7 +18,7 @@ const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;
 
 // MailerLite API config
 const MAILERLITE_API_KEY = process.env.MAILERLITE_API_KEY;
-const MAILERLITE_GROUP_NAME = 'Abandoned Cart';
+const MAILERLITE_GROUP_NAME = 'Jermeo Abandon Cart';
 
 // ===================
 // DATABASE SETUP
