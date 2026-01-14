@@ -215,7 +215,7 @@ async function processAbandonedCarts() {
         AND customer_email != ''
         AND converted = FALSE 
         AND email_sent_1 = FALSE
-        AND updated_at < NOW() - INTERVAL '1 hour'
+        AND updated_at < NOW() - INTERVAL '1 minute'
       ORDER BY updated_at ASC
       LIMIT 10
     `);
