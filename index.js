@@ -197,6 +197,50 @@ async function addSubscriberToMailerLite(email, cartData) {
   }
 }
 
+async function removeFromMailerLiteGroup(email) {
+  try {
+    const groupId = await getMailerLiteGroupId();
+    if (!groupId) return false;
+
+    // First get subscriber ID
+    const searchResponse = await fetch(`https://connect.mailerlite.com/api/subscribers/${encodeURIComponent(email)}`, {
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!searchResponse.ok) {
+      console.log(`Subscriber ${email} not found in MailerLite`);
+      return false;
+    }
+
+    const subscriber = await searchResponse.json();
+    const subscriberId = subscriber.data?.id;
+
+    if (!subscriberId) return false;
+
+    // Remove from group
+    const response = await fetch(`https://connect.mailerlite.com/api/subscribers/${subscriberId}/groups/${groupId}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    });
+
+    if (response.ok) {
+      console.log(`Removed ${email} from MailerLite Abandoned Cart group`);
+      return true;
+    }
+  } catch (error) {
+    console.error('Error removing from MailerLite:', error);
+  }
+  return false;
+}
+
 // ===================
 // ABANDONED CART SCHEDULER
 // ===================
@@ -355,6 +399,7 @@ app.post('/webhooks/order-created', async (req, res) => {
     const orderId = req.body.data?.id;
     const orderData = await fetchFromBigCommerce(`/v2/orders/${orderId}`);
     const cartId = orderData.cart_id;
+    const customerEmail = orderData.billing_address?.email;
     
     if (cartId) {
       await pool.query(`
@@ -363,6 +408,11 @@ app.post('/webhooks/order-created', async (req, res) => {
         WHERE cart_id = $1
       `, [cartId]);
       console.log(`Cart ${cartId} marked as converted (Order ${orderId})`);
+    }
+
+    // Remove from MailerLite abandoned cart group (stops the automation)
+    if (customerEmail) {
+      await removeFromMailerLiteGroup(customerEmail);
     }
 
     res.status(200).json({ received: true });
