@@ -7,6 +7,7 @@ Custom email automation for BigCommerce stores.
 - **Abandoned Cart Tracking**: Captures cart data via BigCommerce webhooks
 - **Browse Abandonment Tracking**: JavaScript tracker for product page views
 - **Conversion Tracking**: Automatically marks carts as converted when orders are placed
+- 
 - **Email Automation**: Scheduled emails for abandoned carts (Phase 2)
 
 ## Setup
