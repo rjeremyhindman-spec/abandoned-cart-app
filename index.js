@@ -19,6 +19,7 @@ const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;
 // MailerLite API config
 const MAILERLITE_API_KEY = process.env.MAILERLITE_API_KEY;
 const MAILERLITE_GROUP_NAME = 'Jermeo Abandon Cart';
+const MAILERLITE_POPUP_GROUP = 'Peekaboo Website Popup';
 
 // ===================
 // DATABASE SETUP
@@ -138,6 +139,66 @@ async function getMailerLiteGroupId() {
   } catch (error) {
     console.error('Error getting MailerLite group:', error);
     return null;
+  }
+}
+
+async function getMailerLitePopupGroupId() {
+  try {
+    const response = await fetch('https://connect.mailerlite.com/api/groups?filter[name]=' + encodeURIComponent(MAILERLITE_POPUP_GROUP), {
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    });
+    
+    const data = await response.json();
+    if (data.data && data.data.length > 0) {
+      return data.data[0].id;
+    }
+    console.error('MailerLite popup group not found:', MAILERLITE_POPUP_GROUP);
+    return null;
+  } catch (error) {
+    console.error('Error getting MailerLite popup group:', error);
+    return null;
+  }
+}
+
+async function addSubscriberToPopupGroup(email) {
+  try {
+    const groupId = await getMailerLitePopupGroupId();
+    if (!groupId) {
+      console.error('Cannot add subscriber - popup group not found');
+      return false;
+    }
+
+    const subscriberData = {
+      email: email,
+      groups: [groupId]
+    };
+
+    const response = await fetch('https://connect.mailerlite.com/api/subscribers', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(subscriberData)
+    });
+
+    const result = await response.json();
+    
+    if (response.ok) {
+      console.log(`Added ${email} to MailerLite Popup group`);
+      return true;
+    } else {
+      console.error('MailerLite popup error:', result);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error adding to MailerLite popup group:', error);
+    return false;
   }
 }
 
@@ -453,6 +514,40 @@ app.post('/track/product-view', async (req, res) => {
 });
 
 app.options('/track/product-view', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.status(200).end();
+});
+
+// Popup signup endpoint
+app.post('/popup/signup', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ success: false, error: 'Email required' });
+    }
+
+    const success = await addSubscriberToPopupGroup(email);
+    
+    if (success) {
+      console.log(`Popup signup: ${email}`);
+      res.status(200).json({ success: true });
+    } else {
+      res.status(200).json({ success: false, error: 'Could not add to list' });
+    }
+  } catch (error) {
+    console.error('Error processing popup signup:', error);
+    res.status(200).json({ success: false, error: error.message });
+  }
+});
+
+app.options('/popup/signup', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
