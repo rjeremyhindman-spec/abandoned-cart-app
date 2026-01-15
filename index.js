@@ -20,6 +20,7 @@ const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;
 const MAILERLITE_API_KEY = process.env.MAILERLITE_API_KEY;
 const MAILERLITE_GROUP_NAME = 'Jermeo Abandon Cart';
 const MAILERLITE_POPUP_GROUP = 'Peekaboo Website Popup';
+const MAILERLITE_BROWSE_GROUP = 'Peekaboo Browse Abandonment';
 
 // ===================
 // DATABASE SETUP
@@ -51,6 +52,7 @@ async function initDatabase() {
         product_name VARCHAR(255),
         product_url VARCHAR(500),
         product_image VARCHAR(500),
+        product_price DECIMAL(10,2),
         viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         added_to_cart BOOLEAN DEFAULT FALSE,
         email_sent BOOLEAN DEFAULT FALSE
@@ -69,6 +71,7 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_abandoned_carts_email ON abandoned_carts(customer_email);
       CREATE INDEX IF NOT EXISTS idx_abandoned_carts_converted ON abandoned_carts(converted);
       CREATE INDEX IF NOT EXISTS idx_browse_events_email ON browse_events(customer_email);
+      CREATE INDEX IF NOT EXISTS idx_browse_events_viewed_at ON browse_events(viewed_at);
     `);
     console.log('Database tables initialized');
   } finally {
@@ -164,6 +167,28 @@ async function getMailerLitePopupGroupId() {
   }
 }
 
+async function getMailerLiteBrowseGroupId() {
+  try {
+    const response = await fetch('https://connect.mailerlite.com/api/groups?filter[name]=' + encodeURIComponent(MAILERLITE_BROWSE_GROUP), {
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    });
+    
+    const data = await response.json();
+    if (data.data && data.data.length > 0) {
+      return data.data[0].id;
+    }
+    console.error('MailerLite browse group not found:', MAILERLITE_BROWSE_GROUP);
+    return null;
+  } catch (error) {
+    console.error('Error getting MailerLite browse group:', error);
+    return null;
+  }
+}
+
 async function addSubscriberToPopupGroup(email) {
   try {
     const groupId = await getMailerLitePopupGroupId();
@@ -198,6 +223,58 @@ async function addSubscriberToPopupGroup(email) {
     }
   } catch (error) {
     console.error('Error adding to MailerLite popup group:', error);
+    return false;
+  }
+}
+
+async function addSubscriberToBrowseGroup(email, products) {
+  try {
+    const groupId = await getMailerLiteBrowseGroupId();
+    if (!groupId) {
+      console.error('Cannot add subscriber - browse group not found');
+      return false;
+    }
+
+    // Build fields for up to 3 products
+    const fields = {
+      browse_product_count: products.length
+    };
+
+    products.slice(0, 3).forEach((product, index) => {
+      const num = index + 1;
+      fields[`browse_product_${num}_name`] = product.product_name || '';
+      fields[`browse_product_${num}_image`] = product.product_image || '';
+      fields[`browse_product_${num}_url`] = product.product_url || '';
+      fields[`browse_product_${num}_price`] = product.product_price || 0;
+    });
+
+    const subscriberData = {
+      email: email,
+      groups: [groupId],
+      fields: fields
+    };
+
+    const response = await fetch('https://connect.mailerlite.com/api/subscribers', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(subscriberData)
+    });
+
+    const result = await response.json();
+    
+    if (response.ok) {
+      console.log(`Added ${email} to MailerLite Browse Abandonment group with ${products.length} products`);
+      return true;
+    } else {
+      console.error('MailerLite browse error:', result);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error adding to MailerLite browse group:', error);
     return false;
   }
 }
@@ -354,9 +431,91 @@ async function processAbandonedCarts() {
   }
 }
 
-// Run every 5 minutes
+// ===================
+// BROWSE ABANDONMENT SCHEDULER
+// ===================
+async function processBrowseAbandonment() {
+  console.log('Checking for browse abandonment...');
+  
+  try {
+    // Find emails with browse events that:
+    // - Have an email
+    // - Were viewed more than 2 hours ago
+    // - Haven't been sent a browse email yet
+    // - Do NOT have an active abandoned cart (unconverted, with email)
+    const result = await pool.query(`
+      SELECT DISTINCT be.customer_email
+      FROM browse_events be
+      WHERE be.customer_email IS NOT NULL 
+        AND be.customer_email != ''
+        AND be.email_sent = FALSE
+        AND be.viewed_at < NOW() - INTERVAL '2 hours'
+        AND NOT EXISTS (
+          SELECT 1 FROM abandoned_carts ac 
+          WHERE ac.customer_email = be.customer_email 
+            AND ac.converted = FALSE
+            AND ac.updated_at > NOW() - INTERVAL '24 hours'
+        )
+      LIMIT 10
+    `);
+
+    console.log(`Found ${result.rows.length} browse abandonment emails to process`);
+
+    for (const row of result.rows) {
+      const email = row.customer_email;
+      
+      // Get the most recent products they viewed (up to 3, deduplicated by product_id)
+      const productsResult = await pool.query(`
+        SELECT DISTINCT ON (product_id) 
+          product_id, product_name, product_url, product_image, product_price, viewed_at
+        FROM browse_events
+        WHERE customer_email = $1 
+          AND email_sent = FALSE
+          AND viewed_at < NOW() - INTERVAL '2 hours'
+        ORDER BY product_id, viewed_at DESC
+      `, [email]);
+
+      // Sort by most recent and take top 3
+      const products = productsResult.rows
+        .sort((a, b) => new Date(b.viewed_at) - new Date(a.viewed_at))
+        .slice(0, 3);
+
+      if (products.length === 0) continue;
+
+      console.log(`Processing browse abandonment for ${email} with ${products.length} products`);
+      
+      const success = await addSubscriberToBrowseGroup(email, products);
+      
+      if (success) {
+        // Mark all browse events for this email as sent
+        await pool.query(`
+          UPDATE browse_events 
+          SET email_sent = TRUE 
+          WHERE customer_email = $1 AND email_sent = FALSE
+        `, [email]);
+        
+        // Log the email
+        await pool.query(`
+          INSERT INTO email_log (email_type, recipient_email, product_id)
+          VALUES ('browse_abandonment', $1, $2)
+        `, [email, products[0].product_id]);
+        
+        console.log(`Successfully processed browse abandonment for ${email}`);
+      }
+    }
+  } catch (error) {
+    console.error('Error processing browse abandonment:', error);
+  }
+}
+
+// Run abandoned cart check every 5 minutes
 cron.schedule('*/5 * * * *', () => {
   processAbandonedCarts();
+});
+
+// Run browse abandonment check every 10 minutes
+cron.schedule('*/10 * * * *', () => {
+  processBrowseAbandonment();
 });
 
 // ===================
@@ -494,18 +653,18 @@ app.post('/track/product-view', async (req, res) => {
   }
 
   try {
-    const { sessionId, email, productId, productName, productUrl, productImage } = req.body;
+    const { sessionId, email, productId, productName, productUrl, productImage, productPrice } = req.body;
     
     if (!productId) {
       return res.status(400).json({ error: 'Product ID required' });
     }
 
     await pool.query(`
-      INSERT INTO browse_events (session_id, customer_email, product_id, product_name, product_url, product_image)
-      VALUES ($1, $2, $3, $4, $5, $6)
-    `, [sessionId, email, productId, productName, productUrl, productImage]);
+      INSERT INTO browse_events (session_id, customer_email, product_id, product_name, product_url, product_image, product_price)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `, [sessionId, email, productId, productName, productUrl, productImage, productPrice || 0]);
 
-    console.log(`Product view tracked: ${productId} (${email || 'anonymous'})`);
+    console.log(`Product view tracked: ${productId} - ${productName} (${email || 'anonymous'})`);
     res.status(200).json({ tracked: true });
   } catch (error) {
     console.error('Error tracking product view:', error);
@@ -572,18 +731,44 @@ app.get('/api/abandoned-carts', async (req, res) => {
   }
 });
 
+app.get('/api/browse-events', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM browse_events 
+      ORDER BY viewed_at DESC 
+      LIMIT 100
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/stats', async (req, res) => {
   try {
-    const stats = await pool.query(`
+    const cartStats = await pool.query(`
       SELECT 
         COUNT(*) FILTER (WHERE converted = FALSE AND customer_email IS NOT NULL AND customer_email != '') as abandoned_with_email,
         COUNT(*) FILTER (WHERE converted = FALSE AND (customer_email IS NULL OR customer_email = '')) as abandoned_anonymous,
         COUNT(*) FILTER (WHERE converted = TRUE) as converted,
-        COUNT(*) FILTER (WHERE email_sent_1 = TRUE) as emails_sent
+        COUNT(*) FILTER (WHERE email_sent_1 = TRUE) as cart_emails_sent
       FROM abandoned_carts
       WHERE created_at > NOW() - INTERVAL '30 days'
     `);
-    res.json(stats.rows[0]);
+    
+    const browseStats = await pool.query(`
+      SELECT 
+        COUNT(*) as total_views,
+        COUNT(DISTINCT customer_email) FILTER (WHERE customer_email IS NOT NULL AND customer_email != '') as unique_visitors_with_email,
+        COUNT(*) FILTER (WHERE email_sent = TRUE) as browse_emails_sent
+      FROM browse_events
+      WHERE viewed_at > NOW() - INTERVAL '30 days'
+    `);
+    
+    res.json({
+      carts: cartStats.rows[0],
+      browse: browseStats.rows[0]
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -593,7 +778,16 @@ app.get('/api/stats', async (req, res) => {
 app.post('/api/process-abandoned', async (req, res) => {
   try {
     await processAbandonedCarts();
-    res.json({ success: true, message: 'Processing triggered' });
+    res.json({ success: true, message: 'Cart processing triggered' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/process-browse', async (req, res) => {
+  try {
+    await processBrowseAbandonment();
+    res.json({ success: true, message: 'Browse processing triggered' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -608,4 +802,5 @@ app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   await initDatabase();
   console.log('Abandoned cart scheduler started - runs every 5 minutes');
+  console.log('Browse abandonment scheduler started - runs every 10 minutes');
 });
