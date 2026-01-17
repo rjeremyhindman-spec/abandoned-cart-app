@@ -6,6 +6,12 @@ const cron = require('node-cron');
 const app = express();
 app.use(express.json());
 
+// ===================
+// TEST MODE SETTINGS
+// ===================
+const TEST_MODE = true;  // SET TO false WHEN READY TO GO LIVE
+const TEST_EMAIL = 'rjeremyhindman@gmail.com';  // Only this email will receive emails in test mode
+
 // Database connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -18,9 +24,6 @@ const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;
 
 // MailerLite API config
 const MAILERLITE_API_KEY = process.env.MAILERLITE_API_KEY;
-const MAILERLITE_GROUP_NAME = 'Jermeo Abandon Cart';
-const MAILERLITE_POPUP_GROUP = 'Peekaboo Website Popup';
-const MAILERLITE_BROWSE_GROUP = 'Peekaboo Browse Abandonment';
 
 // ===================
 // DATABASE SETUP
@@ -121,276 +124,306 @@ async function getCustomerEmail(customerId) {
 }
 
 // ===================
-// MAILERLITE HELPERS
+// EMAIL TEMPLATES
 // ===================
-async function getMailerLiteGroupId() {
-  try {
-    const response = await fetch('https://connect.mailerlite.com/api/groups?filter[name]=' + encodeURIComponent(MAILERLITE_GROUP_NAME), {
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
-    
-    const data = await response.json();
-    if (data.data && data.data.length > 0) {
-      return data.data[0].id;
-    }
-    console.error('MailerLite group not found:', MAILERLITE_GROUP_NAME);
-    return null;
-  } catch (error) {
-    console.error('Error getting MailerLite group:', error);
-    return null;
-  }
+function buildAbandonedCartEmail(customerName, product) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f4f4; font-family: Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f4f4f4;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width: 600px; background-color: #ffffff; border-radius: 8px; overflow: hidden;">
+          
+          <!-- HEADER -->
+          <tr>
+            <td align="center" style="padding: 30px 40px; background-color: #42aba5;">
+              <img src="https://cdn11.bigcommerce.com/s-m91f4azz/images/stencil/original/image-manager/untitled-design-5-.png?t=1768433349" alt="Peek-a-Boo Pattern Shop" width="250" style="display: block; max-width: 250px; height: auto;">
+            </td>
+          </tr>
+          
+          <!-- HEADLINE -->
+          <tr>
+            <td align="center" style="padding: 40px 40px 20px;">
+              <h1 style="margin: 0; font-family: Georgia, serif; font-size: 28px; color: #312c2d;">Oops! You left something behind...</h1>
+            </td>
+          </tr>
+          
+          <!-- INTRO -->
+          <tr>
+            <td style="padding: 0 40px 30px; text-align: center; font-size: 16px; color: #666666; line-height: 1.6;">
+              Your cart is feeling a little lonely! We saved your items so you can pick up right where you left off.
+            </td>
+          </tr>
+          
+          <!-- PRODUCT CARD -->
+          <tr>
+            <td align="center" style="padding: 0 40px 30px;">
+              <table cellpadding="0" cellspacing="0" border="0" style="background: #fafafa; border-radius: 8px; overflow: hidden; border: 1px solid #eee; max-width: 400px; width: 100%;">
+                <tr>
+                  <td align="center" style="padding: 0;">
+                    <a href="${product.url}">
+                      <img src="${product.image}" alt="${product.name}" width="400" style="display: block; width: 100%; height: auto;">
+                    </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 25px; text-align: center;">
+                    <p style="margin: 0 0 5px; font-size: 12px; color: #42aba5; text-transform: uppercase; letter-spacing: 1px;">In Your Cart</p>
+                    <h3 style="margin: 0 0 10px; font-family: Georgia, serif; font-size: 20px; color: #312c2d;">${product.name}</h3>
+                    <p style="margin: 0; font-size: 18px; color: #a71e32; font-weight: bold;">$${product.price}</p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          
+          <!-- CTA BUTTON -->
+          <tr>
+            <td align="center" style="padding: 0 40px 30px;">
+              <a href="https://www.peekaboopatternshop.com/cart.php" style="display: inline-block; padding: 16px 50px; background-color: #a71e32; color: #ffffff; text-decoration: none; font-size: 16px; font-weight: bold; border-radius: 5px; text-transform: uppercase; letter-spacing: 1px;">Complete My Order</a>
+            </td>
+          </tr>
+          
+          <!-- FEATURES -->
+          <tr>
+            <td align="center" style="padding: 0 40px 30px;">
+              <table cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="padding: 0 15px; text-align: center; font-size: 12px; color: #888;">✨ Instant Download</td>
+                  <td style="padding: 0 15px; text-align: center; font-size: 12px; color: #888;">🖨️ Printable Pattern</td>
+                  <td style="padding: 0 15px; text-align: center; font-size: 12px; color: #888;">💕 300K+ Happy Sewists</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          
+          <!-- AMY QUOTE -->
+          <tr>
+            <td style="padding: 30px 40px; background-color: #fafafa; border-top: 1px solid #eee;">
+              <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                  <td width="60" valign="top">
+                    <img src="https://cdn11.bigcommerce.com/s-m91f4azz/images/stencil/original/image-manager/amy-headshot.png" alt="Amy" width="50" style="border-radius: 50%;">
+                  </td>
+                  <td style="padding-left: 15px; font-size: 14px; color: #666; font-style: italic; line-height: 1.5;">
+                    "Have questions about sizing or anything else? Just hit reply — my team and I are always happy to help!"
+                    <br><br>
+                    <strong style="color: #312c2d; font-style: normal;">— Amy</strong><br>
+                    <span style="font-size: 12px; font-style: normal;">Founder & Pattern Designer</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          
+          <!-- FOOTER -->
+          <tr>
+            <td style="padding: 30px 40px; text-align: center; font-size: 12px; color: #999999;">
+              <p style="margin: 0 0 10px;">Peek-a-Boo Pattern Shop<br>205 Settlers Loop • United States</p>
+              <p style="margin: 0;"><a href="{$unsubscribe}" style="color: #999999;">Unsubscribe</a></p>
+            </td>
+          </tr>
+          
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 }
 
-async function getMailerLitePopupGroupId() {
-  try {
-    const response = await fetch('https://connect.mailerlite.com/api/groups?filter[name]=' + encodeURIComponent(MAILERLITE_POPUP_GROUP), {
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
-    
-    const data = await response.json();
-    if (data.data && data.data.length > 0) {
-      return data.data[0].id;
-    }
-    console.error('MailerLite popup group not found:', MAILERLITE_POPUP_GROUP);
-    return null;
-  } catch (error) {
-    console.error('Error getting MailerLite popup group:', error);
-    return null;
-  }
-}
+function buildBrowseAbandonmentEmail(customerName, products) {
+  let productCards = '';
+  
+  products.forEach(product => {
+    productCards += `
+          <!-- PRODUCT CARD -->
+          <tr>
+            <td align="center" style="padding: 0 40px 25px;">
+              <table cellpadding="0" cellspacing="0" border="0" style="background: #fafafa; border-radius: 8px; overflow: hidden; border: 1px solid #eee; max-width: 400px; width: 100%;">
+                <tr>
+                  <td align="center" style="padding: 0;">
+                    <a href="${product.product_url}">
+                      <img src="${product.product_image}" alt="${product.product_name}" width="400" style="display: block; width: 100%; height: auto;">
+                    </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 25px; text-align: center;">
+                    <h3 style="margin: 0 0 15px; font-family: Georgia, serif; font-size: 20px; color: #312c2d;">${product.product_name}</h3>
+                    <a href="${product.product_url}" style="display: inline-block; padding: 14px 35px; background-color: #a71e32; color: #ffffff; text-decoration: none; font-size: 14px; font-weight: bold; border-radius: 5px; text-transform: uppercase;">View Pattern</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>`;
+  });
 
-async function getMailerLiteBrowseGroupId() {
-  try {
-    const response = await fetch('https://connect.mailerlite.com/api/groups?filter[name]=' + encodeURIComponent(MAILERLITE_BROWSE_GROUP), {
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
-    
-    const data = await response.json();
-    if (data.data && data.data.length > 0) {
-      return data.data[0].id;
-    }
-    console.error('MailerLite browse group not found:', MAILERLITE_BROWSE_GROUP);
-    return null;
-  } catch (error) {
-    console.error('Error getting MailerLite browse group:', error);
-    return null;
-  }
-}
-
-async function addSubscriberToPopupGroup(email) {
-  try {
-    const groupId = await getMailerLitePopupGroupId();
-    if (!groupId) {
-      console.error('Cannot add subscriber - popup group not found');
-      return false;
-    }
-
-    const subscriberData = {
-      email: email,
-      groups: [groupId]
-    };
-
-    const response = await fetch('https://connect.mailerlite.com/api/subscribers', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify(subscriberData)
-    });
-
-    const result = await response.json();
-    
-    if (response.ok) {
-      console.log(`Added ${email} to MailerLite Popup group`);
-      return true;
-    } else {
-      console.error('MailerLite popup error:', result);
-      return false;
-    }
-  } catch (error) {
-    console.error('Error adding to MailerLite popup group:', error);
-    return false;
-  }
-}
-
-async function addSubscriberToBrowseGroup(email, products) {
-  try {
-    const groupId = await getMailerLiteBrowseGroupId();
-    if (!groupId) {
-      console.error('Cannot add subscriber - browse group not found');
-      return false;
-    }
-
-    // Build fields for up to 3 products
-    const fields = {
-      browse_product_count: products.length
-    };
-
-    products.slice(0, 3).forEach((product, index) => {
-      const num = index + 1;
-      fields[`browse_product_${num}_name`] = product.product_name || '';
-      fields[`browse_product_${num}_image`] = product.product_image || '';
-      fields[`browse_product_${num}_url`] = product.product_url || '';
-      fields[`browse_product_${num}_price`] = product.product_price || 0;
-    });
-
-    const subscriberData = {
-      email: email,
-      groups: [groupId],
-      fields: fields
-    };
-
-    const response = await fetch('https://connect.mailerlite.com/api/subscribers', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify(subscriberData)
-    });
-
-    const result = await response.json();
-    
-    if (response.ok) {
-      console.log(`Added ${email} to MailerLite Browse Abandonment group with ${products.length} products`);
-      return true;
-    } else {
-      console.error('MailerLite browse error:', result);
-      return false;
-    }
-  } catch (error) {
-    console.error('Error adding to MailerLite browse group:', error);
-    return false;
-  }
-}
-
-async function addSubscriberToMailerLite(email, cartData) {
-  try {
-    const groupId = await getMailerLiteGroupId();
-    if (!groupId) {
-      console.error('Cannot add subscriber - group not found');
-      return false;
-    }
-
-    // Extract product info from cart
-    const lineItems = cartData.line_items || {};
-    const allItems = [
-      ...(lineItems.physical_items || []),
-      ...(lineItems.digital_items || []),
-      ...(lineItems.custom_items || [])
-    ];
-    
-    const firstItem = allItems[0] || {};
-    
-    const subscriberData = {
-      email: email,
-      groups: [groupId],
-      fields: {
-        cart_product_name: firstItem.name || 'Your items',
-        cart_product_image: firstItem.image_url || '',
-        cart_product_url: firstItem.url || '',
-        cart_product_price: firstItem.sale_price || firstItem.list_price || 0,
-        cart_total: cartData.cart_amount || 0,
-        cart_id: cartData.id || ''
-      }
-    };
-
-    const response = await fetch('https://connect.mailerlite.com/api/subscribers', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify(subscriberData)
-    });
-
-    const result = await response.json();
-    
-    if (response.ok) {
-      console.log(`Added ${email} to MailerLite Abandoned Cart group`);
-      return true;
-    } else {
-      console.error('MailerLite error:', result);
-      return false;
-    }
-  } catch (error) {
-    console.error('Error adding to MailerLite:', error);
-    return false;
-  }
-}
-
-async function removeFromMailerLiteGroup(email) {
-  try {
-    const groupId = await getMailerLiteGroupId();
-    if (!groupId) return false;
-
-    // First get subscriber ID
-    const searchResponse = await fetch(`https://connect.mailerlite.com/api/subscribers/${encodeURIComponent(email)}`, {
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
-
-    if (!searchResponse.ok) {
-      console.log(`Subscriber ${email} not found in MailerLite`);
-      return false;
-    }
-
-    const subscriber = await searchResponse.json();
-    const subscriberId = subscriber.data?.id;
-
-    if (!subscriberId) return false;
-
-    // Remove from group
-    const response = await fetch(`https://connect.mailerlite.com/api/subscribers/${subscriberId}/groups/${groupId}`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
-
-    if (response.ok) {
-      console.log(`Removed ${email} from MailerLite Abandoned Cart group`);
-      return true;
-    }
-  } catch (error) {
-    console.error('Error removing from MailerLite:', error);
-  }
-  return false;
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f4f4; font-family: Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f4f4f4;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width: 600px; background-color: #ffffff; border-radius: 8px; overflow: hidden;">
+          
+          <!-- HEADER -->
+          <tr>
+            <td align="center" style="padding: 30px 40px; background-color: #42aba5;">
+              <img src="https://cdn11.bigcommerce.com/s-m91f4azz/images/stencil/original/image-manager/untitled-design-5-.png?t=1768433349" alt="Peek-a-Boo Pattern Shop" width="250" style="display: block; max-width: 250px; height: auto;">
+            </td>
+          </tr>
+          
+          <!-- HEADLINE -->
+          <tr>
+            <td align="center" style="padding: 40px 40px 20px;">
+              <h1 style="margin: 0; font-family: Georgia, serif; font-size: 28px; color: #312c2d;">Still thinking about it?</h1>
+            </td>
+          </tr>
+          
+          <!-- INTRO -->
+          <tr>
+            <td style="padding: 0 40px 30px; text-align: center; font-size: 16px; color: #666666; line-height: 1.6;">
+              Hi ${customerName || 'there'},<br><br>
+              We noticed you were checking out some patterns. In case you got distracted, here's what caught your eye:
+            </td>
+          </tr>
+          
+          ${productCards}
+          
+          <!-- DIVIDER -->
+          <tr>
+            <td align="center" style="padding: 15px 40px 25px;">
+              <div style="width: 80px; height: 3px; background-color: #42aba5;"></div>
+            </td>
+          </tr>
+          
+          <!-- CTA -->
+          <tr>
+            <td align="center" style="padding: 0 40px 40px;">
+              <h2 style="margin: 0 0 20px; font-family: Georgia, serif; font-size: 22px; color: #312c2d; font-weight: normal;">Ready to start your next project?</h2>
+              <a href="https://www.peekaboopatternshop.com/sewing-patterns/" style="display: inline-block; padding: 16px 45px; background-color: #42aba5; color: #ffffff; text-decoration: none; font-size: 15px; font-weight: bold; border-radius: 5px; text-transform: uppercase; letter-spacing: 1px;">Shop All Patterns</a>
+            </td>
+          </tr>
+          
+          <!-- FOOTER -->
+          <tr>
+            <td style="padding: 30px 40px; background-color: #fafafa; border-top: 1px solid #eee; text-align: center;">
+              <p style="margin: 0 0 5px; font-size: 15px; color: #666;">Happy sewing!</p>
+              <p style="margin: 0 0 20px; font-size: 15px; color: #312c2d; font-weight: bold;">The Peek-a-Boo Pattern Shop Team</p>
+              <p style="margin: 0; font-size: 12px; color: #999999;">
+                Peek-a-Boo Pattern Shop • 205 Settlers Loop • United States<br><br>
+                <a href="{$unsubscribe}" style="color: #999999;">Unsubscribe</a>
+              </p>
+            </td>
+          </tr>
+          
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 }
 
 // ===================
-// ABANDONED CART SCHEDULER
+// MAILERLITE API - SEND EMAIL
+// ===================
+async function sendEmailViaMailerLite(toEmail, subject, htmlContent) {
+  // Check test mode
+  if (TEST_MODE && toEmail.toLowerCase() !== TEST_EMAIL.toLowerCase()) {
+    console.log(`TEST MODE: Skipping email to ${toEmail} (only sending to ${TEST_EMAIL})`);
+    return false;
+  }
+
+  try {
+    // First, ensure subscriber exists
+    const subscriberResponse = await fetch('https://connect.mailerlite.com/api/subscribers', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({ email: toEmail })
+    });
+
+    // Create a campaign and send
+    const campaignResponse = await fetch('https://connect.mailerlite.com/api/campaigns', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        name: `${subject} - ${toEmail} - ${Date.now()}`,
+        type: 'regular',
+        emails: [{
+          subject: subject,
+          from_name: 'Peek-a-Boo Pattern Shop',
+          from: 'amy@peekaboopatternshop.com',
+          content: htmlContent
+        }]
+      })
+    });
+
+    if (!campaignResponse.ok) {
+      const errorData = await campaignResponse.json();
+      console.error('Campaign creation error:', errorData);
+      return false;
+    }
+
+    const campaign = await campaignResponse.json();
+    const campaignId = campaign.data.id;
+
+    // Send to specific subscriber
+    const sendResponse = await fetch(`https://connect.mailerlite.com/api/campaigns/${campaignId}/actions/send`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        delivery: 'instant',
+        recipient: {
+          type: 'subscriber',
+          email: toEmail
+        }
+      })
+    });
+
+    if (sendResponse.ok) {
+      console.log(`Email sent to ${toEmail}: ${subject}`);
+      return true;
+    } else {
+      const errorData = await sendResponse.json();
+      console.error('Send error:', errorData);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error sending email via MailerLite:', error);
+    return false;
+  }
+}
+
+// ===================
+// ABANDONED CART PROCESSOR
 // ===================
 async function processAbandonedCarts() {
   console.log('Checking for abandoned carts...');
   
   try {
-    // Find carts that:
-    // - Have an email
-    // - Are not converted
-    // - Haven't had first email sent
-    // - Were updated more than 1 hour ago
     const result = await pool.query(`
       SELECT * FROM abandoned_carts 
       WHERE customer_email IS NOT NULL 
@@ -405,25 +438,52 @@ async function processAbandonedCarts() {
     console.log(`Found ${result.rows.length} abandoned carts to process`);
 
     for (const cart of result.rows) {
-      console.log(`Processing cart ${cart.cart_id} for ${cart.customer_email}`);
+      const email = cart.customer_email;
       
-      const success = await addSubscriberToMailerLite(cart.customer_email, cart.cart_data);
+      // Test mode check
+      if (TEST_MODE && email.toLowerCase() !== TEST_EMAIL.toLowerCase()) {
+        console.log(`TEST MODE: Skipping cart for ${email}`);
+        continue;
+      }
+
+      console.log(`Processing cart ${cart.cart_id} for ${email}`);
+      
+      // Extract product info from cart
+      const cartData = cart.cart_data;
+      const lineItems = cartData.line_items || {};
+      const allItems = [
+        ...(lineItems.physical_items || []),
+        ...(lineItems.digital_items || []),
+        ...(lineItems.custom_items || [])
+      ];
+      
+      const firstItem = allItems[0] || {};
+      
+      const product = {
+        name: firstItem.name || 'Your items',
+        image: firstItem.image_url || '',
+        url: firstItem.url || 'https://www.peekaboopatternshop.com',
+        price: (firstItem.sale_price || firstItem.list_price || 0).toFixed(2)
+      };
+
+      const subject = `Oops! You left ${product.name} in your cart`;
+      const htmlContent = buildAbandonedCartEmail(null, product);
+      
+      const success = await sendEmailViaMailerLite(email, subject, htmlContent);
       
       if (success) {
-        // Mark as email sent
         await pool.query(`
           UPDATE abandoned_carts 
           SET email_sent_1 = TRUE 
           WHERE id = $1
         `, [cart.id]);
         
-        // Log the email
         await pool.query(`
-          INSERT INTO email_log (email_type, recipient_email, cart_id)
-          VALUES ('abandoned_cart_1', $1, $2)
-        `, [cart.customer_email, cart.cart_id]);
+          INSERT INTO email_log (email_type, recipient_email, subject, cart_id)
+          VALUES ('abandoned_cart_1', $1, $2, $3)
+        `, [email, subject, cart.cart_id]);
         
-        console.log(`Successfully processed cart ${cart.cart_id}`);
+        console.log(`Successfully sent abandoned cart email for ${cart.cart_id}`);
       }
     }
   } catch (error) {
@@ -432,17 +492,12 @@ async function processAbandonedCarts() {
 }
 
 // ===================
-// BROWSE ABANDONMENT SCHEDULER
+// BROWSE ABANDONMENT PROCESSOR
 // ===================
 async function processBrowseAbandonment() {
   console.log('Checking for browse abandonment...');
   
   try {
-    // Find emails with browse events that:
-    // - Have an email
-    // - Were viewed more than 2 hours ago
-    // - Haven't been sent a browse email yet
-    // - Do NOT have an active abandoned cart (unconverted, with email)
     const result = await pool.query(`
       SELECT DISTINCT be.customer_email
       FROM browse_events be
@@ -464,7 +519,12 @@ async function processBrowseAbandonment() {
     for (const row of result.rows) {
       const email = row.customer_email;
       
-      // Get the most recent products they viewed (up to 3, deduplicated by product_id)
+      // Test mode check
+      if (TEST_MODE && email.toLowerCase() !== TEST_EMAIL.toLowerCase()) {
+        console.log(`TEST MODE: Skipping browse abandonment for ${email}`);
+        continue;
+      }
+
       const productsResult = await pool.query(`
         SELECT DISTINCT ON (product_id) 
           product_id, product_name, product_url, product_image, product_price, viewed_at
@@ -475,7 +535,6 @@ async function processBrowseAbandonment() {
         ORDER BY product_id, viewed_at DESC
       `, [email]);
 
-      // Sort by most recent and take top 3
       const products = productsResult.rows
         .sort((a, b) => new Date(b.viewed_at) - new Date(a.viewed_at))
         .slice(0, 3);
@@ -484,23 +543,24 @@ async function processBrowseAbandonment() {
 
       console.log(`Processing browse abandonment for ${email} with ${products.length} products`);
       
-      const success = await addSubscriberToBrowseGroup(email, products);
+      const subject = `Still thinking about ${products[0].product_name}?`;
+      const htmlContent = buildBrowseAbandonmentEmail(null, products);
+      
+      const success = await sendEmailViaMailerLite(email, subject, htmlContent);
       
       if (success) {
-        // Mark all browse events for this email as sent
         await pool.query(`
           UPDATE browse_events 
           SET email_sent = TRUE 
           WHERE customer_email = $1 AND email_sent = FALSE
         `, [email]);
         
-        // Log the email
         await pool.query(`
-          INSERT INTO email_log (email_type, recipient_email, product_id)
-          VALUES ('browse_abandonment', $1, $2)
-        `, [email, products[0].product_id]);
+          INSERT INTO email_log (email_type, recipient_email, subject, product_id)
+          VALUES ('browse_abandonment', $1, $2, $3)
+        `, [email, subject, products[0].product_id]);
         
-        console.log(`Successfully processed browse abandonment for ${email}`);
+        console.log(`Successfully sent browse abandonment email for ${email}`);
       }
     }
   } catch (error) {
@@ -524,7 +584,12 @@ cron.schedule('*/10 * * * *', () => {
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'Abandoned Cart App is running' });
+  res.json({ 
+    status: 'ok', 
+    message: 'Abandoned Cart App is running',
+    testMode: TEST_MODE,
+    testEmail: TEST_MODE ? TEST_EMAIL : 'N/A'
+  });
 });
 
 // BigCommerce webhook: Cart Created
@@ -619,7 +684,6 @@ app.post('/webhooks/order-created', async (req, res) => {
     const orderId = req.body.data?.id;
     const orderData = await fetchFromBigCommerce(`/v2/orders/${orderId}`);
     const cartId = orderData.cart_id;
-    const customerEmail = orderData.billing_address?.email;
     
     if (cartId) {
       await pool.query(`
@@ -630,11 +694,6 @@ app.post('/webhooks/order-created', async (req, res) => {
       console.log(`Cart ${cartId} marked as converted (Order ${orderId})`);
     }
 
-    // Remove from MailerLite abandoned cart group (stops the automation)
-    if (customerEmail) {
-      await removeFromMailerLiteGroup(customerEmail);
-    }
-
     res.status(200).json({ received: true });
   } catch (error) {
     console.error('Error processing order webhook:', error);
@@ -642,7 +701,7 @@ app.post('/webhooks/order-created', async (req, res) => {
   }
 });
 
-// Browse event endpoint (called from storefront JavaScript)
+// Browse event endpoint
 app.post('/track/product-view', async (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -692,13 +751,36 @@ app.post('/popup/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email required' });
     }
 
-    const success = await addSubscriberToPopupGroup(email);
+    // Add to MailerLite Popup group
+    const response = await fetch('https://connect.mailerlite.com/api/groups?filter[name]=' + encodeURIComponent('Peekaboo Website Popup'), {
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    });
     
-    if (success) {
+    const groupData = await response.json();
+    const groupId = groupData.data?.[0]?.id;
+
+    if (groupId) {
+      await fetch('https://connect.mailerlite.com/api/subscribers', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          email: email,
+          groups: [groupId]
+        })
+      });
+      
       console.log(`Popup signup: ${email}`);
       res.status(200).json({ success: true });
     } else {
-      res.status(200).json({ success: false, error: 'Could not add to list' });
+      res.status(200).json({ success: false, error: 'Group not found' });
     }
   } catch (error) {
     console.error('Error processing popup signup:', error);
@@ -767,7 +849,9 @@ app.get('/api/stats', async (req, res) => {
     
     res.json({
       carts: cartStats.rows[0],
-      browse: browseStats.rows[0]
+      browse: browseStats.rows[0],
+      testMode: TEST_MODE,
+      testEmail: TEST_MODE ? TEST_EMAIL : 'N/A'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -778,7 +862,7 @@ app.get('/api/stats', async (req, res) => {
 app.post('/api/process-abandoned', async (req, res) => {
   try {
     await processAbandonedCarts();
-    res.json({ success: true, message: 'Cart processing triggered' });
+    res.json({ success: true, message: 'Cart processing triggered', testMode: TEST_MODE });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -787,7 +871,44 @@ app.post('/api/process-abandoned', async (req, res) => {
 app.post('/api/process-browse', async (req, res) => {
   try {
     await processBrowseAbandonment();
-    res.json({ success: true, message: 'Browse processing triggered' });
+    res.json({ success: true, message: 'Browse processing triggered', testMode: TEST_MODE });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Test email endpoint - send a test email immediately
+app.post('/api/test-email', async (req, res) => {
+  try {
+    const { type } = req.body; // 'cart' or 'browse'
+    
+    if (type === 'cart') {
+      const product = {
+        name: 'Women\'s Sweatshirt Dress Pattern',
+        image: 'https://cdn11.bigcommerce.com/s-m91f4azz/products/10307/images/57602/_43821__02557.1767096507.215.338.jpg',
+        url: 'https://peekaboopatternshop.com/women-s-sweatshirt-dress-pattern/',
+        price: '12.95'
+      };
+      
+      const subject = `TEST: Oops! You left ${product.name} in your cart`;
+      const html = buildAbandonedCartEmail(null, product);
+      const success = await sendEmailViaMailerLite(TEST_EMAIL, subject, html);
+      
+      res.json({ success, message: success ? 'Test cart email sent' : 'Failed to send', testMode: TEST_MODE });
+    } else if (type === 'browse') {
+      const products = [
+        { product_name: 'Wildflower Dress', product_image: 'https://cdn11.bigcommerce.com/s-m91f4azz/images/stencil/1280x1280/products/189/43834/_1174__26498.1765947170.jpg', product_url: 'https://www.peekaboopatternshop.com/wildflower-dress/' },
+        { product_name: 'Alex & Anna Pajamas', product_image: 'https://cdn11.bigcommerce.com/s-m91f4azz/images/stencil/1280x1280/products/255/6498/Alex_and_Anna_pajamas_pattern__16653.1557262025.jpg', product_url: 'https://www.peekaboopatternshop.com/alex-anna-pajamas/' }
+      ];
+      
+      const subject = `TEST: Still thinking about ${products[0].product_name}?`;
+      const html = buildBrowseAbandonmentEmail('Jeremy', products);
+      const success = await sendEmailViaMailerLite(TEST_EMAIL, subject, html);
+      
+      res.json({ success, message: success ? 'Test browse email sent' : 'Failed to send', testMode: TEST_MODE });
+    } else {
+      res.status(400).json({ error: 'Type must be "cart" or "browse"' });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -800,6 +921,7 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`TEST MODE: ${TEST_MODE ? 'ON - Only sending to ' + TEST_EMAIL : 'OFF - Sending to all'}`);
   await initDatabase();
   console.log('Abandoned cart scheduler started - runs every 5 minutes');
   console.log('Browse abandonment scheduler started - runs every 10 minutes');
