@@ -130,7 +130,7 @@ async function getCustomerEmail(customerId) {
 // IMAGE REDIRECT ENDPOINTS (for MailerLite)
 // ===================
 
-// Cart product image redirect
+// Cart product image redirect (keeping for reference, but BigCommerce handles cart emails now)
 app.get('/cart-image', async (req, res) => {
   try {
     const email = req.query.email;
@@ -187,6 +187,8 @@ app.get('/browse-image', async (req, res) => {
         product_id, product_name, product_url, product_image, viewed_at
       FROM browse_events
       WHERE customer_email = $1
+        AND product_image IS NOT NULL
+        AND product_image != ''
       ORDER BY product_id, viewed_at DESC
     `, [email]);
 
@@ -272,120 +274,6 @@ async function addSubscriberToMailerLite(email, groupName, fields = {}) {
   }
 }
 
-async function removeFromMailerLiteGroup(email, groupName) {
-  try {
-    const groupId = await getMailerLiteGroupId(groupName);
-    if (!groupId) return false;
-
-    const searchResponse = await fetch(`https://connect.mailerlite.com/api/subscribers/${encodeURIComponent(email)}`, {
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
-
-    if (!searchResponse.ok) {
-      console.log(`Subscriber ${email} not found in MailerLite`);
-      return false;
-    }
-
-    const subscriber = await searchResponse.json();
-    const subscriberId = subscriber.data?.id;
-
-    if (!subscriberId) return false;
-
-    const response = await fetch(`https://connect.mailerlite.com/api/subscribers/${subscriberId}/groups/${groupId}`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
-
-    if (response.ok) {
-      console.log(`Removed ${email} from MailerLite group: ${groupName}`);
-      return true;
-    }
-  } catch (error) {
-    console.error('Error removing from MailerLite:', error);
-  }
-  return false;
-}
-
-// ===================
-// ABANDONED CART PROCESSOR
-// ===================
-async function processAbandonedCarts() {
-  console.log('Checking for abandoned carts...');
-  
-  try {
-    const result = await pool.query(`
-      SELECT * FROM abandoned_carts 
-      WHERE customer_email IS NOT NULL 
-        AND customer_email != ''
-        AND converted = FALSE 
-        AND email_sent_1 = FALSE
-        AND updated_at < NOW() - INTERVAL '1 hour'
-      ORDER BY updated_at ASC
-      LIMIT 10
-    `);
-
-    console.log(`Found ${result.rows.length} abandoned carts to process`);
-
-    for (const cart of result.rows) {
-      const email = cart.customer_email;
-      
-      // Test mode check
-      if (TEST_MODE && email.toLowerCase() !== TEST_EMAIL.toLowerCase()) {
-        console.log(`TEST MODE: Skipping cart for ${email}`);
-        continue;
-      }
-
-      console.log(`Processing cart ${cart.cart_id} for ${email}`);
-      
-      // Extract product info from cart
-      const cartData = cart.cart_data;
-      const lineItems = cartData.line_items || {};
-      const allItems = [
-        ...(lineItems.physical_items || []),
-        ...(lineItems.digital_items || []),
-        ...(lineItems.custom_items || [])
-      ];
-      
-      const firstItem = allItems[0] || {};
-      
-      // Build fields for MailerLite - use redirect URL for image
-      const fields = {
-        cart_product_name: firstItem.name || 'Your items',
-        cart_product_url: firstItem.url || 'https://www.peekaboopatternshop.com',
-        cart_total: cartData.cart_amount || 0,
-        cart_id: cartData.id || ''
-      };
-
-      const success = await addSubscriberToMailerLite(email, 'Jermeo Abandon Cart', fields);
-      
-      if (success) {
-        await pool.query(`
-          UPDATE abandoned_carts 
-          SET email_sent_1 = TRUE 
-          WHERE id = $1
-        `, [cart.id]);
-        
-        await pool.query(`
-          INSERT INTO email_log (email_type, recipient_email, cart_id)
-          VALUES ('abandoned_cart_1', $1, $2)
-        `, [email, cart.cart_id]);
-        
-        console.log(`Successfully processed cart ${cart.cart_id}`);
-      }
-    }
-  } catch (error) {
-    console.error('Error processing abandoned carts:', error);
-  }
-}
-
 // ===================
 // BROWSE ABANDONMENT PROCESSOR
 // ===================
@@ -393,6 +281,11 @@ async function processBrowseAbandonment() {
   console.log('Checking for browse abandonment...');
   
   try {
+    // Find emails with browse events that:
+    // - Have an email
+    // - Were viewed more than 2 hours ago
+    // - Haven't been sent a browse email yet
+    // - Do NOT have an active abandoned cart (so BigCommerce handles those)
     const result = await pool.query(`
       SELECT DISTINCT be.customer_email
       FROM browse_events be
@@ -400,6 +293,8 @@ async function processBrowseAbandonment() {
         AND be.customer_email != ''
         AND be.email_sent = FALSE
         AND be.viewed_at < NOW() - INTERVAL '2 hours'
+        AND be.product_image IS NOT NULL
+        AND be.product_image != ''
         AND NOT EXISTS (
           SELECT 1 FROM abandoned_carts ac 
           WHERE ac.customer_email = be.customer_email 
@@ -420,6 +315,7 @@ async function processBrowseAbandonment() {
         continue;
       }
 
+      // Get products with images only
       const productsResult = await pool.query(`
         SELECT DISTINCT ON (product_id) 
           product_id, product_name, product_url, product_image, product_price, viewed_at
@@ -427,14 +323,19 @@ async function processBrowseAbandonment() {
         WHERE customer_email = $1 
           AND email_sent = FALSE
           AND viewed_at < NOW() - INTERVAL '2 hours'
+          AND product_image IS NOT NULL
+          AND product_image != ''
         ORDER BY product_id, viewed_at DESC
       `, [email]);
 
       const products = productsResult.rows
         .sort((a, b) => new Date(b.viewed_at) - new Date(a.viewed_at))
-        .slice(0, 3);
+        .slice(0, 2); // Get top 2 most recent products
 
-      if (products.length === 0) continue;
+      if (products.length === 0) {
+        console.log(`No products with images for ${email}, skipping`);
+        continue;
+      }
 
       console.log(`Processing browse abandonment for ${email} with ${products.length} products`);
       
@@ -446,10 +347,7 @@ async function processBrowseAbandonment() {
         browse_product_1_price: products[0]?.product_price || 0,
         browse_product_2_name: products[1]?.product_name || '',
         browse_product_2_url: products[1]?.product_url || '',
-        browse_product_2_price: products[1]?.product_price || 0,
-        browse_product_3_name: products[2]?.product_name || '',
-        browse_product_3_url: products[2]?.product_url || '',
-        browse_product_3_price: products[2]?.product_price || 0
+        browse_product_2_price: products[1]?.product_price || 0
       };
       
       const success = await addSubscriberToMailerLite(email, 'Peekaboo Browse Abandonment', fields);
@@ -474,11 +372,6 @@ async function processBrowseAbandonment() {
   }
 }
 
-// Run abandoned cart check every 5 minutes
-cron.schedule('*/5 * * * *', () => {
-  processAbandonedCarts();
-});
-
 // Run browse abandonment check every 10 minutes
 cron.schedule('*/10 * * * *', () => {
   processBrowseAbandonment();
@@ -492,15 +385,16 @@ cron.schedule('*/10 * * * *', () => {
 app.get('/', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Abandoned Cart App is running',
+    message: 'Browse Abandonment App is running',
     testMode: TEST_MODE,
-    testEmail: TEST_MODE ? TEST_EMAIL : 'N/A'
+    testEmail: TEST_MODE ? TEST_EMAIL : 'N/A',
+    note: 'Abandoned cart emails handled by BigCommerce. This app handles browse abandonment only.'
   });
 });
 
-// BigCommerce webhook: Cart Created
+// BigCommerce webhook: Cart Created (tracking only - for browse exclusion)
 app.post('/webhooks/cart-created', async (req, res) => {
-  console.log('Cart created webhook received:', req.body);
+  console.log('Cart created webhook received');
   
   try {
     const cartId = req.body.data?.id || req.body.data?.cartId;
@@ -532,7 +426,7 @@ app.post('/webhooks/cart-created', async (req, res) => {
         updated_at = CURRENT_TIMESTAMP
     `, [cartId, customerEmail, cart.customer_id, JSON.stringify(cart), cartTotal]);
 
-    console.log(`Cart ${cartId} stored/updated. Email: ${customerEmail || 'unknown'}`);
+    console.log(`Cart ${cartId} tracked. Email: ${customerEmail || 'unknown'}`);
     res.status(200).json({ received: true });
   } catch (error) {
     console.error('Error processing cart webhook:', error);
@@ -540,9 +434,9 @@ app.post('/webhooks/cart-created', async (req, res) => {
   }
 });
 
-// BigCommerce webhook: Cart Updated
+// BigCommerce webhook: Cart Updated (tracking only - for browse exclusion)
 app.post('/webhooks/cart-updated', async (req, res) => {
-  console.log('Cart updated webhook received:', req.body);
+  console.log('Cart updated webhook received');
   
   try {
     const cartId = req.body.data?.id || req.body.data?.cartId;
@@ -584,13 +478,12 @@ app.post('/webhooks/cart-updated', async (req, res) => {
 
 // BigCommerce webhook: Order Created (marks cart as converted)
 app.post('/webhooks/order-created', async (req, res) => {
-  console.log('Order created webhook received:', req.body);
+  console.log('Order created webhook received');
   
   try {
     const orderId = req.body.data?.id;
     const orderData = await fetchFromBigCommerce(`/v2/orders/${orderId}`);
     const cartId = orderData.cart_id;
-    const customerEmail = orderData.billing_address?.email;
     
     if (cartId) {
       await pool.query(`
@@ -599,11 +492,6 @@ app.post('/webhooks/order-created', async (req, res) => {
         WHERE cart_id = $1
       `, [cartId]);
       console.log(`Cart ${cartId} marked as converted (Order ${orderId})`);
-    }
-
-    // Remove from MailerLite abandoned cart group (stops the automation)
-    if (customerEmail) {
-      await removeFromMailerLiteGroup(customerEmail, 'Jermeo Abandon Cart');
     }
 
     res.status(200).json({ received: true });
@@ -721,8 +609,7 @@ app.get('/api/stats', async (req, res) => {
       SELECT 
         COUNT(*) FILTER (WHERE converted = FALSE AND customer_email IS NOT NULL AND customer_email != '') as abandoned_with_email,
         COUNT(*) FILTER (WHERE converted = FALSE AND (customer_email IS NULL OR customer_email = '')) as abandoned_anonymous,
-        COUNT(*) FILTER (WHERE converted = TRUE) as converted,
-        COUNT(*) FILTER (WHERE email_sent_1 = TRUE) as cart_emails_sent
+        COUNT(*) FILTER (WHERE converted = TRUE) as converted
       FROM abandoned_carts
       WHERE created_at > NOW() - INTERVAL '30 days'
     `);
@@ -748,15 +635,6 @@ app.get('/api/stats', async (req, res) => {
 });
 
 // Manual trigger for testing
-app.post('/api/process-abandoned', async (req, res) => {
-  try {
-    await processAbandonedCarts();
-    res.json({ success: true, message: 'Cart processing triggered', testMode: TEST_MODE });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 app.post('/api/process-browse', async (req, res) => {
   try {
     await processBrowseAbandonment();
@@ -774,7 +652,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`TEST MODE: ${TEST_MODE ? 'ON - Only sending to ' + TEST_EMAIL : 'OFF - Sending to all'}`);
+  console.log('NOTE: Abandoned cart emails handled by BigCommerce');
   await initDatabase();
-  console.log('Abandoned cart scheduler started - runs every 5 minutes');
   console.log('Browse abandonment scheduler started - runs every 10 minutes');
 });
