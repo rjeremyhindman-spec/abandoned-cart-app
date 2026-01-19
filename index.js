@@ -265,6 +265,38 @@ app.get('/browse-image', async (req, res) => {
 // ===================
 // MAILERLITE HELPERS
 // ===================
+
+// Update subscriber fields in MailerLite (for win-back email automation)
+async function updateMailerLiteSubscriber(email, fields = {}) {
+  try {
+    const response = await fetch('https://connect.mailerlite.com/api/subscribers', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${MAILERLITE_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        email: email,
+        fields: fields
+      })
+    });
+
+    const result = await response.json();
+    
+    if (response.ok) {
+      console.log(`Updated MailerLite subscriber ${email} with fields:`, fields);
+      return true;
+    } else {
+      console.error('MailerLite update error:', result);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error updating MailerLite subscriber:', error);
+    return false;
+  }
+}
+
 async function getMailerLiteGroupId(groupName) {
   try {
     const response = await fetch('https://connect.mailerlite.com/api/groups?filter[name]=' + encodeURIComponent(groupName), {
@@ -532,7 +564,7 @@ app.post('/webhooks/cart-updated', async (req, res) => {
   }
 });
 
-// BigCommerce webhook: Order Created (marks cart as converted)
+// BigCommerce webhook: Order Created (marks cart as converted + updates MailerLite)
 app.post('/webhooks/order-created', async (req, res) => {
   console.log('Order created webhook received');
   
@@ -540,6 +572,7 @@ app.post('/webhooks/order-created', async (req, res) => {
     const orderId = req.body.data?.id;
     const orderData = await fetchFromBigCommerce(`/v2/orders/${orderId}`);
     const cartId = orderData.cart_id;
+    const customerEmail = orderData.billing_address?.email;
     
     if (cartId) {
       await pool.query(`
@@ -548,6 +581,15 @@ app.post('/webhooks/order-created', async (req, res) => {
         WHERE cart_id = $1
       `, [cartId]);
       console.log(`Cart ${cartId} marked as converted (Order ${orderId})`);
+    }
+
+    // Update MailerLite with last purchase date for win-back automation
+    if (customerEmail) {
+      const today = new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
+      await updateMailerLiteSubscriber(customerEmail, {
+        last_purchase_date: today
+      });
+      console.log(`Updated MailerLite last_purchase_date for ${customerEmail}: ${today}`);
     }
 
     res.status(200).json({ received: true });
