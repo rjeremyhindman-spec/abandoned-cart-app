@@ -126,11 +126,63 @@ async function getCustomerEmail(customerId) {
   return null;
 }
 
+// Update BigCommerce cart with customer email
+async function updateCartEmail(cartId, email) {
+  try {
+    const response = await fetch(`https://api.bigcommerce.com/stores/${BC_STORE_HASH}/v3/carts/${cartId}`, {
+      method: 'PUT',
+      headers: {
+        'X-Auth-Token': BC_ACCESS_TOKEN,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        customer_id: 0,
+        email: email
+      })
+    });
+    
+    if (response.ok) {
+      console.log(`Updated BigCommerce cart ${cartId} with email: ${email}`);
+      return true;
+    } else {
+      const errorText = await response.text();
+      console.error(`Failed to update cart ${cartId}:`, errorText);
+      return false;
+    }
+  } catch (error) {
+    console.error('Error updating cart email:', error);
+    return false;
+  }
+}
+
+// Get most recent cart ID from our database (created in last 30 minutes without email)
+async function getRecentCartWithoutEmail() {
+  try {
+    const result = await pool.query(`
+      SELECT cart_id FROM abandoned_carts 
+      WHERE (customer_email IS NULL OR customer_email = '')
+        AND converted = FALSE
+        AND updated_at > NOW() - INTERVAL '30 minutes'
+      ORDER BY updated_at DESC 
+      LIMIT 1
+    `);
+    
+    if (result.rows.length > 0) {
+      return result.rows[0].cart_id;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error getting recent cart:', error);
+    return null;
+  }
+}
+
 // ===================
 // IMAGE REDIRECT ENDPOINTS (for MailerLite)
 // ===================
 
-// Cart product image redirect (keeping for reference, but BigCommerce handles cart emails now)
+// Cart product image redirect
 app.get('/cart-image', async (req, res) => {
   try {
     const email = req.query.email;
@@ -385,14 +437,18 @@ cron.schedule('*/10 * * * *', () => {
 app.get('/', (req, res) => {
   res.json({ 
     status: 'ok', 
-    message: 'Browse Abandonment App is running',
+    message: 'Peek-a-Boo Tracking App',
     testMode: TEST_MODE,
     testEmail: TEST_MODE ? TEST_EMAIL : 'N/A',
-    note: 'Abandoned cart emails handled by BigCommerce. This app handles browse abandonment only.'
+    features: [
+      'Browse abandonment emails via MailerLite',
+      'Cart tracking for BigCommerce abandoned cart emails',
+      'Popup email capture syncs to BigCommerce carts'
+    ]
   });
 });
 
-// BigCommerce webhook: Cart Created (tracking only - for browse exclusion)
+// BigCommerce webhook: Cart Created
 app.post('/webhooks/cart-created', async (req, res) => {
   console.log('Cart created webhook received');
   
@@ -434,7 +490,7 @@ app.post('/webhooks/cart-created', async (req, res) => {
   }
 });
 
-// BigCommerce webhook: Cart Updated (tracking only - for browse exclusion)
+// BigCommerce webhook: Cart Updated
 app.post('/webhooks/cart-updated', async (req, res) => {
   console.log('Cart updated webhook received');
   
@@ -499,6 +555,60 @@ app.post('/webhooks/order-created', async (req, res) => {
     console.error('Error processing order webhook:', error);
     res.status(200).json({ received: true, error: error.message });
   }
+});
+
+// ===================
+// ADD TO CART TRACKING (syncs popup email to BigCommerce cart)
+// ===================
+app.post('/track/add-to-cart', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(200).json({ success: false, error: 'No email provided' });
+    }
+
+    console.log(`Add-to-cart detected for email: ${email}`);
+
+    // Find the most recent cart without an email (created in last 30 min)
+    const cartId = await getRecentCartWithoutEmail();
+    
+    if (!cartId) {
+      console.log('No recent cart without email found');
+      return res.status(200).json({ success: false, error: 'No recent cart to update' });
+    }
+
+    // Update the BigCommerce cart with this email
+    const updated = await updateCartEmail(cartId, email);
+    
+    if (updated) {
+      // Also update our database
+      await pool.query(`
+        UPDATE abandoned_carts 
+        SET customer_email = $1, updated_at = CURRENT_TIMESTAMP 
+        WHERE cart_id = $2
+      `, [email, cartId]);
+      
+      console.log(`Successfully linked email ${email} to cart ${cartId}`);
+      return res.status(200).json({ success: true, cartId: cartId });
+    } else {
+      return res.status(200).json({ success: false, error: 'Failed to update BigCommerce cart' });
+    }
+  } catch (error) {
+    console.error('Error in add-to-cart tracking:', error);
+    res.status(200).json({ success: false, error: error.message });
+  }
+});
+
+app.options('/track/add-to-cart', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.status(200).end();
 });
 
 // Browse event endpoint
@@ -652,7 +762,10 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`TEST MODE: ${TEST_MODE ? 'ON - Only sending to ' + TEST_EMAIL : 'OFF - Sending to all'}`);
-  console.log('NOTE: Abandoned cart emails handled by BigCommerce');
+  console.log('Features:');
+  console.log('  - Browse abandonment emails (via MailerLite)');
+  console.log('  - Cart tracking (for BigCommerce abandoned cart emails)');
+  console.log('  - Popup email → BigCommerce cart sync');
   await initDatabase();
   console.log('Browse abandonment scheduler started - runs every 10 minutes');
 });
