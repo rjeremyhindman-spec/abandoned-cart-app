@@ -9,7 +9,7 @@ app.use(express.json());
 // ===================
 // TEST MODE SETTINGS
 // ===================
-const TEST_MODE = true;  // SET TO false WHEN READY TO GO LIVE
+const TEST_MODE = false;  // SET TO false WHEN READY TO GO LIVE
 const TEST_EMAIL = 'rjeremyhindman@gmail.com';  // Only this email will receive emails in test mode
 
 // Placeholder image if product image not found
